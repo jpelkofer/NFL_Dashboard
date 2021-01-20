@@ -1,0 +1,1011 @@
+---
+title: "NFL Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    css: css/styles-default.css
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(shinyWidgets)
+library(DT)
+library(shinyjs)
+
+# Core
+library(tidyverse)
+library(lubridate)
+
+# Viz
+library(plotly)
+
+# Web Scraping
+library(rvest)
+library(jsonlite)
+
+
+# Database
+library(DBI)
+library(RPostgres)
+
+theme_set(theme_minimal())
+
+useShinyjs(rmd = TRUE)
+```
+
+
+```{r}
+# connect to db, grab data
+con <- dbConnect(drv = RPostgres::Postgres(), user = "postgres", password = "dashsnow33", dbname = "nfl_db")
+
+#db_list_tables(con)
+
+dk_pts_tbl <- tbl(con, "dk_pts_tbl") %>% 
+  select(everything()) %>% 
+  collect()
+
+dk_pts_tbl <- dk_pts_tbl %>% 
+  mutate(team = team %>% str_to_upper(),
+         opp  = opp %>% str_to_upper()) %>% 
+  mutate(opp = case_when(
+    opp == "OAK" ~ "LVR",
+    TRUE ~ opp
+  ))
+
+```
+
+```{r}
+
+
+# Scrape fantasy pros data
+
+fpros_flex_data <- read_csv("fpros_data.csv") %>% 
+  janitor::clean_names() %>%
+  select(rk, player_name, pos, opp) %>% 
+  # separate(`Superflex (QB/RB/WR/TE) (Team)`,
+  #          into = c("first", "last"),
+  #          sep = " ") %>%
+  separate(player_name, into = c("first", "last"), sep = " ") %>% 
+  unite(player, c("first", "last"), sep = " ") %>% 
+  mutate(
+    #hold = last %>% str_detect("[.]"),
+    pos = pos %>% str_extract(pattern = "[:alpha:]+")
+  )
+
+# # QB, RB, WR, TE
+# fpros_flex_data <- read_html("https://www.fantasypros.com/nfl/rankings/ppr-superflex.php") %>% 
+#   html_nodes("table") %>% 
+#   purrr::pluck(1) %>% 
+#   html_table(fill = TRUE) %>% 
+#   drop_na(Rank) %>%
+#   separate(`Superflex (QB/RB/WR/TE) (Team)`, into = c("first", "last"), sep = " ") %>%
+#   mutate(hold = last %>% str_detect("[.]"),
+#          pos = Pos %>% str_extract(pattern = "[:alpha:]+")) %>%
+#   mutate(last = case_when(
+#     hold == TRUE ~ last %>% str_sub(end = -3),
+#     TRUE ~ last
+#   )) %>% 
+#   unite(player, c("first", "last"), sep = " ") %>%
+#   select(rank = Rank, player, pos, opp = Opp, best = Best, worst = Worst, avg = Avg, st_dev = `Std Dev`)
+
+
+# Scrape draft kings salaries
+json <- jsonlite::read_json("https://api.draftkings.com/draftgroups/v1/draftgroups/43428/draftables?format=json")
+
+players <- json %>% 
+  purrr::pluck("draftables") %>% 
+  map_chr(purrr::pluck("displayName")) 
+
+salaries <- json %>% 
+  purrr::pluck("draftables") %>% 
+  map_dbl(purrr::pluck("salary"))
+
+
+teams <- json %>% purrr::pluck("draftables") %>% 
+  map_chr(purrr::pluck("teamAbbreviation"))
+
+dk_data <- tibble(player = players, 
+                  salary = salaries,
+                  team = teams) %>% 
+  distinct() %>% 
+  mutate(player = player %>% str_trim())
+
+
+# Combine fantasy pros and dk salary data
+fpros_with_dk_sals_data <- fpros_flex_data %>% 
+  mutate(player = case_when(
+    player == "Gardner Minshew" ~ "Gardner Minshew II",
+    player == "DeAndre Washington" ~ "DeAndre Washington",
+    player == "Allen Robinson" ~ "Allen Robinson II",
+    player == "Bennie Fowler" ~ "Bennie Fowler III",
+    player == "Todd Gurley" ~ "Todd Gurley II",
+    player == "D.J. Moore" ~ "DJ Moore",
+    player == "Mitch Trubisky" ~ "Mitchell Trubisky",
+    player == "D.J. Chark" ~ "DJ Chark Jr.",
+    player == "Mark Ingram" ~ "Mark Ingram II",
+    player == "Odell Beckham" ~ "Odell Beckham Jr.",
+    player == "Melvin Gordon" ~ "Melvin Gordon III",
+    player == "Will Fuller" ~ "Will Fuller V",
+    player == "Dwayne Haskins" ~ "Dwayne Haskins Jr.",
+    player == "Marvin Jones" ~ "Marvin Jones Jr.",
+    player == "Henry Ruggs" ~ "Henry Ruggs III",
+    player == "Ronald Jones" ~ "Ronald Jones II",
+    player == "Michael Pittman" ~ "Michael Pittman Jr.",
+    player == "Chris Herndon" ~ "Chris Herndon",
+    player == "Laviska Shenault" ~ "Laviska Shenault Jr.",
+    player == "Irv Smith" ~ "Irv Smith Jr.",
+    player == "Steven Sims" ~ "Steven Sims Jr.",
+    player == "Darrell Henderson" ~ "Darrell Henderson Jr.",
+    player == "Van Jefferson" ~ "Van Jefferson Jr.",
+    player == "John Ross" ~ "John Ross III",
+    player == "A.J. Dillon" ~ "AJ Dillon",
+    player == "Anthony McFarland" ~ "Anthony McFarland Jr.",
+    player == "J.J. Arcega-Whiteside" ~ "JJ Arcega-Whiteside",
+    player == "Benny Snell" ~ "Benny Snell Jr.",
+    player == "Phillip Dorsett" ~ "Phillip Dorsett II",
+    player == "Willie Snead" ~ "Willie Snead IV",
+    player == "Lynn Bowden" ~ "Lynn Bowden Jr.",
+    player == "Lamical Perine" ~ "La'Mical Perine",
+    player == "Wayne Gallman" ~ "Wayne Gallman Jr.",
+    player == "Scott Miller" ~ "Scotty Miller",
+    player == "Ted Ginn" ~ "Ted Ginn Jr.",
+    player == "Equanimeous S" ~ "Equanimeous St. Brown",
+    player == "CJ Ham" ~ "C.J. Ham",
+    player == "Donald Parham" ~ "Donald Parham Jr.",
+    player == "Khadarel Hodge" ~ "KhaDarel Hodge",
+    player == "D.K. Metcalf" ~ "DK Metcalf",
+    TRUE ~ player
+  )) %>%
+  left_join(dk_data, by = "player")
+
+```
+
+
+```{r}
+# get pass plays data
+
+pass_plays <- tbl(con, "pbp_tbl") %>% 
+  filter(game_date %>% between(left = lubridate::ymd("2019-09-01"), right = lubridate::ymd("2021-09-23")) &
+           play_type == "pass") %>% 
+  select(play_id, game_id, home_team, away_team, season_type, week, posteam, defteam, game_date, yards_gained, pass_length, pass_location, air_yards, 
+         yards_after_catch, epa, passer_player_id, passer_player_name, receiver_player_id, receiver_player_name, cp, cpoe) %>% 
+  collect()
+
+pass_plays <- pass_plays %>% 
+    separate(receiver_player_name, into = c("receiver_player_name", "extra"), sep = " ")
+
+rush_plays <- tbl(con, "pbp_tbl") %>%
+  filter(game_date %>% between(left = lubridate::ymd("2019-09-01"), right = lubridate::ymd("2021-09-23")) &
+           play_type == "run") %>% 
+  select(play_id, game_id, home_team, away_team, season_type, week, posteam, defteam, game_date, yards_gained, yardline_100, rusher_player_name, epa) %>% 
+  collect()
+
+dbDisconnect(con)
+
+rush_plays <- rush_plays %>% 
+  select(game_date, week, posteam, defteam, rusher_player_name, yards_gained, epa, yardline_100) %>% 
+  drop_na()
+
+pass_plays <- pass_plays %>% 
+  select(game_date, week, posteam, defteam, receiver_player_name, pass_length, pass_location, epa, air_yards) %>% 
+  drop_na()
+
+```
+
+
+
+Opponent Outlook
+=======================================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+
+shinyWidgets::pickerInput(
+  inputId = "select_dropdown_opp",
+  label   = h4("Opponent"),
+  choices = unique(dk_pts_tbl$opp) %>% sort(),
+  selected = "ARI"
+)
+
+# renderText(input$select_dropdown_opp)
+
+shinyWidgets::pickerInput(
+  inputId  = "picker_weeks",
+  label    = h4("Select Weeks"),
+  choices  = unique(dk_pts_tbl$week),
+  selected = unique(dk_pts_tbl$week),
+  multiple = TRUE,
+  options = list(
+    `actions-box` = TRUE,
+    size = 10,
+    `selected-text-format` = "count > 3"
+    )
+)
+
+shinyWidgets::checkboxGroupButtons(
+  inputId  = "checkbox_seasons",
+  label    = h4("Select Season(s)"),
+  choices  = unique(dk_pts_tbl$season) %>% sort(decreasing = TRUE),
+  direction = "vertical",
+  selected = c(2019, 2020),
+  checkIcon = list(yes = icon("ok", lib = "glyphicon"),
+                   no  = NULL)
+)
+
+br()
+hr()
+br()
+
+actionButton(inputId = "reset",
+             label = "Reset",
+             icon = icon("sync"))
+
+observeEvent(eventExpr = input$reset, handlerExpr = {
+  updatePickerInput(session = session,
+                    inputId = "select_dropdown_opp",
+                    selected = "ARI")
+  
+  updatePickerInput(
+    session = session,
+    inputId = "picker_weeks",
+    selected = unique(dk_pts_tbl$week)
+  )
+  
+  updateCheckboxGroupButtons(session = session,
+                             inputId = "checkbox_seasons",
+                             selected = "2019")
+})
+
+```
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+### Top Scorer vs. Opponenet per Week
+
+```{r}
+dk_pts_data_filtered <- reactive({
+  dk_pts_tbl %>%
+    
+    filter(opp %in% input$select_dropdown_opp) %>%
+    filter(week %in% input$picker_weeks) %>% 
+    filter(season %in% input$checkbox_seasons) %>% 
+    
+    group_by(opp, season, week) %>%
+    summarise(top_scorer = max(dk_pts)) %>%
+    ungroup() %>%
+    left_join(
+      dk_pts_tbl %>%
+        filter(opp %in% input$select_dropdown_opp),
+      by = c("opp", "season", "week", "top_scorer" = "dk_pts")
+    ) %>% 
+     mutate(label_text = str_glue("Player: {str_c({first}, {last}, sep = ' ')}
+                                Team: {team}
+                                Salary: {salary}
+                                Week: {week}
+                                DK Pts: {top_scorer}"))
+})
+
+output$plot_1 <- renderPlot({
+  
+  dk_pts_data_filtered() %>%
+    ggplot(aes(week, top_scorer)) +
+    
+    geom_line() +
+    geom_point() +
+    geom_label(aes(label = last)) +
+    
+    facet_wrap(~season) +
+    
+    labs(x = "Week", y = "DK Points")
+})
+
+plotOutput(outputId = "plot_1")
+```
+
+
+
+### Table Summary
+
+```{r}
+
+
+output$dt_output_1 <- DT::renderDataTable(
+  expr = {
+    dk_pts_data_filtered() %>% 
+      mutate(player = str_glue("{str_c({first}, {last}, sep = ' ')}"),
+             fpts   = top_scorer) %>% 
+      select(player, team, opp, salary, season, week, fpts)
+  },
+  options = list(scrollY = "250px")
+)
+
+DTOutput(outputId = "dt_output_1")
+
+  
+
+```
+
+Fantasy Pros Positional Value {data-orientation=columns}
+=======================================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+
+shinyWidgets::checkboxGroupButtons(
+  inputId  = "checkbox_pos",
+  label    = h4("Select Position(s)"),
+  choices  = unique(fpros_with_dk_sals_data$pos) %>% sort(),
+  selected = unique(fpros_with_dk_sals_data$pos),
+  direction = "vertical",
+  checkIcon = list(
+    yes = icon("ok", lib = "glyphicon"),
+    no  = NULL
+  )
+)
+
+sliderInput(
+  inputId = "slider_salaries", 
+  label   = h4("Salary Range"), 
+  min     = 0, 
+  max     = max(fpros_with_dk_sals_data$salary, na.rm = TRUE), 
+  value   = c(0, max(fpros_with_dk_sals_data$salary, na.rm = TRUE)),
+  step    = 100,
+  round   = TRUE,
+  pre     = "$"
+)
+
+shinyWidgets::pickerInput(
+  inputId  = "picker_team",
+  label    = h4("Select Team(s)"),
+  choices  = unique(fpros_with_dk_sals_data$team) %>% sort(),
+  selected = unique(fpros_with_dk_sals_data$team) %>% sort(),
+  multiple = TRUE,
+  options = list(
+    `actions-box` = TRUE,
+    size = 25,
+    `selected-text-format` = "count > 3"
+    )
+)
+
+br()
+hr()
+br()
+
+actionButton(inputId = "reset_2",
+             label = "Reset",
+             icon = icon("sync"))
+
+observeEvent(eventExpr = input$reset_2, handlerExpr = {
+  updateCheckboxGroupButtons(
+    session = session,
+    inputId = "checkbox_pos",
+    selected = unique(fpros_with_dk_sals_data$pos)
+  )
+  
+  updateSliderInput(session = session,
+                    inputId = "slider_salaries",
+                    value = c(0, max(fpros_with_dk_sals_data$salary, na.rm = TRUE))
+                    )
+  
+  updatePickerInput(
+    session = session,
+    inputId = "picker_team",
+    selected = unique(fpros_with_dk_sals_data$team)
+  )
+})
+```
+
+Column {data-height=1000}
+-----------------------------------------------------------------------
+### Fantasy Pros Consensus Rank vs. Draft Kings Salary Rank
+
+```{r}
+fpros_with_dk_sals_data_filtered <- reactive({
+  
+  fpros_with_dk_sals_data %>%
+    
+    filter(pos %in% c(input$checkbox_pos)) %>% 
+    filter(salary %>% between(left  = input$slider_salaries[1],
+                              right = input$slider_salaries[2])) %>% 
+    filter(team %in% c(input$picker_team))
+    
+})
+
+output$dt_output_2 <- DT::renderDataTable(
+  
+  expr = {
+    
+    fpros_with_dk_sals_data_filtered() %>%
+      
+      mutate(Fantasy_Pros_Rank = dense_rank(rk),
+             DK_Salary_Rank = dense_rank(-salary)) %>%
+      mutate(Ranking_Value = DK_Salary_Rank - Fantasy_Pros_Rank) %>%
+      
+      select(player,
+             Fantasy_Pros_Rank,
+             DK_Salary_Rank,
+             Ranking_Value,
+             salary,
+             everything()) %>% 
+      arrange(Fantasy_Pros_Rank)
+  },
+  
+  filter = "top",
+  
+  options = list(pageLength = 15,
+                 scrollY = "650px"
+                 )
+  
+)
+
+DTOutput(outputId = "dt_output_2")
+  
+```
+
+Pass Defense {data-orientation=columns}
+=======================================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+dateRangeInput(
+  inputId = "date_range", 
+  label   = h4("Date Range"),
+  start   = ymd("2020-09-01"), 
+  end     = max(pass_plays$game_date), 
+  min     = min(pass_plays$game_date), 
+  max     = max(pass_plays$game_date), 
+  startview = "month")
+
+```
+
+```{r}
+
+pp_filtered <- reactive({
+  
+  pass_plays %>% 
+    
+    filter(game_date %>% between(left  = input$date_range[1],
+                                 right = input$date_range[2])) %>%
+    
+    select(defteam, pass_length, pass_location, epa) %>%
+    drop_na()
+  
+  
+})
+
+```
+
+Column {data-height=500}
+-----------------------------------------------------------------------
+### EPA Allowed Left Side of Field
+```{r}
+output$plotly_left <- renderPlotly({
+  
+g_left <- pp_filtered() %>%
+  
+  filter(pass_location %in% c("left")) %>% 
+  
+  group_by(defteam, pass_location) %>%
+  summarize(avg_epa = epa %>% mean(),
+            targets = n()) %>%
+  ungroup() %>%
+  
+  mutate(label_text = str_glue("EPA/Att = {avg_epa}
+                               Total Targets = {targets}")) %>%
+  
+  ggplot(aes(fct_reorder(defteam, avg_epa), avg_epa)) +
+  
+  geom_col(aes(text = label_text)) +
+  
+  coord_flip() +
+  
+  labs(x = "", y = "Average EPA Allowed")
+
+ggplotly(g_left, tooltip = "text")
+  
+})
+
+plotlyOutput(outputId = "plotly_left")
+
+```
+
+Column {data-height=500}
+-----------------------------------------------------------------------
+### EPA Allowed Middle of Field
+```{r}
+output$plotly_middle <- renderPlotly({
+  
+g_middle <- pp_filtered() %>%
+  
+  filter(pass_location %in% c("middle")) %>% 
+  
+  group_by(defteam, pass_location) %>%
+  summarize(avg_epa = epa %>% mean(),
+            targets = n()) %>%
+  ungroup() %>%
+  
+  mutate(label_text = str_glue("EPA/Att = {avg_epa}
+                               Total Targets = {targets}")) %>%
+  
+  ggplot(aes(fct_reorder(defteam, avg_epa), avg_epa)) +
+  
+  geom_col(aes(text = label_text)) +
+  
+  coord_flip() +
+  
+  labs(x = "", y = "Average EPA Allowed")
+
+ggplotly(g_middle, tooltip = "text")
+  
+})
+
+
+plotlyOutput(outputId = "plotly_middle")
+
+
+```
+
+
+Column {data-height=500}
+-----------------------------------------------------------------------
+### EPA Allowed Right Side of Field
+```{r}
+output$plotly_right <-renderPlotly({
+  
+g_right <- pp_filtered() %>%
+  
+  filter(pass_location %in% c("right")) %>% 
+  
+  group_by(defteam, pass_location) %>%
+  summarize(avg_epa = epa %>% mean(),
+            targets = n()) %>%
+  ungroup() %>%
+  
+  mutate(label_text = str_glue("EPA/Att = {avg_epa}
+                               Total Targets = {targets}")) %>%
+  
+  ggplot(aes(fct_reorder(defteam, avg_epa), avg_epa)) +
+  
+  geom_col(aes(text = label_text)) +
+  
+  coord_flip() +
+  
+  labs(x = "", y = "Average EPA Allowed")
+
+ggplotly(g_right, tooltip = "text")
+  
+})
+
+
+
+plotlyOutput(outputId = "plotly_right")
+
+
+```
+
+
+
+
+Receiving {data-orientation=rows}
+=======================================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+
+
+dateRangeInput(
+  inputId = "date_range_2", 
+  label   = h4("Date Range"),
+  start   = ymd("2020-09-01"), 
+  end     = max(pass_plays$game_date), 
+  min     = min(pass_plays$game_date), 
+  max     = max(pass_plays$game_date), 
+  startview = "month")
+
+shinyWidgets::pickerInput(
+  inputId  = "picker_pass_location_2",
+  label    = h4("Select Pass Location(s)"),
+  choices  = unique(pass_plays$pass_location) %>% sort(),
+  selected = unique(pass_plays$pass_location),
+  multiple = TRUE,
+  options = list(
+    `actions-box` = TRUE,
+    size = 10,
+    `selected-text-format` = "count > 3"
+    )
+)
+
+
+br()
+
+
+actionButton(inputId = "apply", label = "Apply", icon = icon(name = "play", lib = "font-awesome"))
+
+actionButton("reset_5", label = "Reset", icon = icon("sync"))
+
+observeEvent(eventExpr = input$reset_5, handlerExpr = {
+  
+  updateDateRangeInput(session = session, inputId = "date_range_2", start = ymd("2020-09-01"), end = max(pass_plays$game_date))
+  
+  # updatePickerInput(session = session, inputId = "picker_receiver_team", selected = unique(pass_plays$posteam))
+  
+  updatePickerInput(session = session, inputId = "picker_pass_location_2", selected = unique(pass_plays$pass_location))
+  
+  #updatePickerInput(session = session, inputId = "picker_targets", selected = 10)
+  
+  delay(ms = 300, expr = {
+    click(id = "apply")
+  })
+  
+})
+
+br()
+br()
+br()
+br()
+br()
+br()
+hr()
+br()
+br()
+
+shinyWidgets::pickerInput(
+  inputId  = "picker_receiver_team",
+  label    = h4("Select Team"),
+  choices  = unique(pass_plays$posteam) %>% sort(),
+  selected = "ARI",
+  multiple = FALSE,
+  options = list(
+    `actions-box` = TRUE,
+    size = 10,
+    `selected-text-format` = "count > 3"
+    )
+)
+
+
+```
+
+```{r}
+
+# Receiver Table Filter
+pass_plays_filtered_2 <- eventReactive(eventExpr = input$apply, valueExpr = {
+  
+  pass_plays %>% 
+    
+    filter(game_date %>% between(left  = input$date_range_2[1],
+                                 right = input$date_range_2[2])) %>%
+    
+    # filter(posteam %in% input$picker_receiver_team) %>% 
+    
+    filter(pass_location %in% input$picker_pass_location_2) %>% 
+    
+    select(receiver_player_name, posteam, pass_length, pass_location, epa) %>%
+    drop_na() %>%
+    
+    group_by(receiver_player_name, posteam, pass_location) %>%
+    summarize(avg_epa = epa %>% mean(),
+              targets = n()) %>%
+    ungroup() 
+  
+}, ignoreNULL = FALSE)
+
+
+# Target Share Filter
+target_share_filtered <- reactive({
+  
+  pass_plays %>%
+    
+    filter(game_date %>% between(
+      left = lubridate::ymd("2020-09-01"),
+      right = lubridate::ymd("2021-09-25")
+    )) %>%
+    
+    filter(posteam %in% input$picker_receiver_team) %>%
+    
+    group_by(receiver_player_name, posteam, week) %>%
+    summarize(targets = n(),
+              air_yards = sum(air_yards)) %>%
+    ungroup() %>%
+    
+    left_join(
+      select(pass_plays, posteam, week, game_date, air_yards) %>%
+        
+        filter(
+          #!is.na(air_yards),
+          game_date %>% between(
+            left = lubridate::ymd("2020-09-01"),
+            right = lubridate::ymd("2021-09-25")
+          )
+        ) %>%
+        
+        filter(posteam %in% input$picker_receiver_team) %>% 
+        
+        group_by(posteam, week) %>%
+        summarize(
+          total_passes = n(),
+          total_airyards = sum(air_yards)
+        ) %>%
+        ungroup(),
+      by = c("posteam", "week")
+    ) %>%
+    
+    mutate(ms_targets = targets / total_passes,
+           ms_air_yards = air_yards / total_airyards,
+           label_text = str_glue("Player: {receiver_player_name}
+                            Target Share: {scales::percent(ms_targets, accuracy = .1)}
+                            AY_Share: {scales::percent(ms_air_yards, accuracy = .1)}
+                            Targets: {targets}"))
+})
+
+```
+
+Row {data-height=1000}
+-----------------------------------------------------------------------
+```{r}
+
+output$dt_output_5 <- DT::renderDataTable({
+  
+  pass_plays_filtered_2() %>% 
+    
+    arrange(desc(avg_epa))
+  
+  }, 
+  
+  filter = "top",
+  
+  options = list(pageLength = 50,
+                 scrollY = "250px")
+  
+)
+
+DTOutput(outputId = "dt_output_5")
+```
+
+
+Row {data-height=1000 .tabset}
+-----------------------------------------------------------------------
+
+### Market Share Targets
+```{r}
+
+output$plotly_1 <- renderPlotly({
+  
+  g1 <- target_share_filtered() %>%
+    ggplot(aes(week, ms_targets, color = receiver_player_name)) +
+    
+    geom_point(aes(text = label_text)) +
+    geom_line() +
+    
+    scale_x_continuous(breaks = c(1:17), labels = c(1:17)) +
+    scale_y_continuous(labels = scales::percent) +
+    
+    labs(x = "Week", y = "Target Share") +
+    
+    theme(legend.position = "top")
+  
+  ggplotly(g1, tooltip = "text") %>% 
+    hide_legend() %>% 
+    layout(hovermode = "compare")
+  
+  
+})
+
+plotlyOutput(outputId = "plotly_1")
+
+
+
+```
+
+### Market Share Air Yards
+```{r}
+output$plotly_2 <- renderPlotly({
+  
+  g2 <- target_share_filtered() %>%
+    ggplot(aes(week, ms_air_yards, color = receiver_player_name)) +
+    
+    geom_point(aes(text = label_text)) +
+    geom_line() +
+    
+    scale_x_continuous(breaks = c(1:17), labels = c(1:17)) +
+    scale_y_continuous(labels = scales::percent) +
+    
+    labs(x = "Week", y = "") +
+    
+    theme(legend.position = "top")
+  
+  ggplotly(g2, tooltip = "text") %>% 
+    hide_legend() %>% 
+    layout(hovermode = "compare")
+  
+  
+})
+
+plotlyOutput(outputId = "plotly_2")
+```
+
+
+Rushing {data-orientation=rows}
+=======================================================================
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+shinyWidgets::pickerInput(
+  inputId  = "picker_rusher_team",
+  label    = h4("Select Team"),
+  choices  = unique(rush_plays$posteam) %>% sort(),
+  selected = "ARI",
+  multiple = FALSE,
+  options = list(
+    `actions-box` = TRUE,
+    size = 10,
+    `selected-text-format` = "count > 3"
+    )
+)
+```
+
+```{r}
+#market share carries
+carry_share_filtered <- reactive({
+  
+  rush_plays %>%
+    
+    filter(game_date %>% between(
+      left = lubridate::ymd("2020-09-01"),
+      right = lubridate::ymd("2021-09-25")
+    )) %>%
+    
+    filter(posteam %in% input$picker_rusher_team) %>%
+    
+    group_by(rusher_player_name, posteam, week) %>%
+    summarize(carries = n(),
+              ypc = mean(yards_gained)) %>%
+    ungroup() %>%
+    
+    left_join(
+      select(rush_plays, posteam, week, game_date, yards_gained) %>%
+        
+        filter(
+          !is.na(yards_gained),
+          game_date %>% between(
+            left = lubridate::ymd("2020-09-01"),
+            right = lubridate::ymd("2021-09-25")
+          )
+        ) %>%
+        
+        filter(posteam %in% input$picker_rusher_team) %>% 
+        
+        group_by(posteam, week) %>%
+        summarize(
+          total_carries = n()
+        ) %>%
+        ungroup(),
+      by = c("posteam", "week")
+    ) %>%
+    
+    mutate(ms_carries = carries / total_carries,
+           label_text = str_glue("Player: {rusher_player_name}
+                            Carry Share: {scales::percent(ms_carries, accuracy = .1)}
+                            YPC: {ypc}"))
+})
+
+
+# market share goalline
+goalline_filtered <- reactive({
+  
+  rush_plays %>%
+    
+    filter(game_date %>% between(
+      left = lubridate::ymd("2020-09-01"),
+      right = lubridate::ymd("2021-09-25")
+    )) %>%
+    
+    filter(yardline_100 <= 5) %>% 
+    
+    filter(posteam %in% input$picker_rusher_team) %>%
+    
+    group_by(rusher_player_name, posteam, week) %>%
+    summarize(carries = n(),
+              ypc = mean(yards_gained)) %>%
+    ungroup() %>%
+    
+    left_join(
+      select(rush_plays, posteam, week, game_date, yards_gained, yardline_100) %>%
+        
+        filter(
+          !is.na(yards_gained),
+          yardline_100 <= 5,
+          game_date %>% between(
+            left = lubridate::ymd("2020-09-01"),
+            right = lubridate::ymd("2021-09-25")
+          )
+        ) %>%
+        
+        filter(posteam %in% input$picker_rusher_team) %>% 
+        
+        group_by(posteam, week) %>%
+        summarize(
+          total_carries = n()
+        ) %>%
+        ungroup(),
+      by = c("posteam", "week")
+    ) %>%
+    
+    mutate(ms_goalline = carries / total_carries,
+           label_text = str_glue("Player: {rusher_player_name}
+                            Carry Share Inside 5: {scales::percent(ms_goalline, accuracy = .1)}
+                            Carries Inside 5: {carries}"))
+})
+```
+
+Row {data-height=1000}
+-----------------------------------------------------------------------
+
+### Market Share Carries
+```{r}
+output$plotly_3 <- renderPlotly({
+  
+  g3 <- carry_share_filtered() %>%
+    ggplot(aes(week, ms_carries, color = rusher_player_name)) +
+    
+    geom_point(aes(text = label_text)) +
+    geom_line() +
+    
+    scale_x_continuous(breaks = c(1:17), labels = c(1:17)) +
+    scale_y_continuous(labels = scales::percent) +
+    
+    labs(x = "Week", y = "") +
+    
+    theme(legend.position = "top")
+  
+  ggplotly(g3, tooltip = "text") %>% 
+    hide_legend() %>% 
+    layout(hovermode = "compare")
+  
+  
+})
+
+plotlyOutput(outputId = "plotly_3")
+```
+
+Row {data-height=1000}
+-----------------------------------------------------------------------
+
+### Market Share Carries Inside 5 Yardline
+```{r}
+output$plotly_4 <- renderPlotly({
+  
+  g3 <- goalline_filtered() %>%
+    ggplot(aes(week, ms_goalline, color = rusher_player_name)) +
+    
+    geom_point(aes(text = label_text)) +
+    geom_line() +
+    
+    scale_x_continuous(breaks = c(1:17), labels = c(1:17)) +
+    scale_y_continuous(limits = c(0:1), labels = scales::percent) +
+    
+    labs(x = "Week", y = "") +
+    
+    theme(legend.position = "top")
+  
+  ggplotly(g3, tooltip = "text") %>% 
+    hide_legend() %>% 
+    layout(hovermode = "compare")
+  
+  
+})
+
+plotlyOutput(outputId = "plotly_4")
+```
